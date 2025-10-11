@@ -42,6 +42,7 @@ class ModelObject;
 class PrintHostJobQueue;
 class Model;
 class AppUpdater;
+class ConfigServer;
 
 namespace GUI{
 
@@ -184,6 +185,7 @@ private:
     std::unique_ptr <AppUpdater> m_app_updater;
     std::unique_ptr <wxSingleInstanceChecker> m_single_instance_checker;
     std::unique_ptr <Downloader> m_downloader;
+    std::unique_ptr<Slic3r::ConfigServer> m_config_server;
     std::string m_instance_hash_string;
 	size_t m_instance_hash_int;
 
@@ -192,6 +194,7 @@ public:
     bool            initialized() const { return m_initialized; }
 
     explicit GUI_App(EAppMode mode = EAppMode::Editor);
+    ~GUI_App() override;
 
     EAppMode get_app_mode() const { return m_app_mode; }
     bool is_editor() const { return m_app_mode == EAppMode::Editor; }
@@ -384,6 +387,7 @@ public:
 	RemovableDriveManager* removable_drive_manager() { return m_removable_drive_manager.get(); }
 	OtherInstanceMessageHandler* other_instance_message_handler() { return m_other_instance_message_handler.get(); }
     wxSingleInstanceChecker* single_instance_checker() {return m_single_instance_checker.get();}
+    ConfigServer* config_server() { return m_config_server.get(); }
 
 	void        init_single_instance_checker(const std::string &name, const std::string &path);
 	void        set_instance_hash (const size_t hash) { m_instance_hash_int = hash; m_instance_hash_string = std::to_string(hash); }

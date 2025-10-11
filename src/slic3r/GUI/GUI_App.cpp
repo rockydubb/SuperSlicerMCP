@@ -81,6 +81,7 @@
 #include "../Utils/MacDarkMode.hpp"
 #include "../Utils/AppUpdater.hpp"
 #include "../Utils/WinRegistry.hpp"
+#include "../Utils/ConfigServer.hpp"
 #include "slic3r/Config/Snapshot.hpp"
 #include "CalibrationBedDialog.hpp"
 #include "CalibrationBridgeDialog.hpp"
@@ -972,6 +973,20 @@ GUI_App::GUI_App(EAppMode mode)
     , m_downloader(std::make_unique<Downloader>())
 {
     // all initailisation is reported into GUI_App::OnInit() to be able to have the gui set up and be abel to display messages.
+}
+
+GUI_App::~GUI_App()
+{
+    // Stop ConfigServer if it's running
+    if (m_config_server) {
+        try {
+            m_config_server->stop();
+            BOOST_LOG_TRIVIAL(info) << "ConfigServer stopped";
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(error) << "Error stopping ConfigServer: " << e.what();
+        }
+        m_config_server.reset();
+    }
 }
 
 // If formatted for github, plaintext with OpenGL extensions enclosed into <details>.
@@ -1867,6 +1882,22 @@ bool GUI_App::on_init_inner()
         if (m_post_initialized && app_config->dirty())
             app_config->save();
     });
+
+    // Initialize ConfigServer if enabled via config file or command line
+    if (app_config->get("enable_config_server") == "1" || (init_params && init_params->enable_config_server)) {
+        try {
+            int port = 21987; // Default port
+            if (app_config->has("config_server_port")) {
+                port = std::stoi(app_config->get("config_server_port"));
+            }
+            m_config_server = std::make_unique<ConfigServer>();
+            m_config_server->set_gui_app(this);
+            m_config_server->start(port);
+            BOOST_LOG_TRIVIAL(info) << "ConfigServer started on port " << port;
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(error) << "Failed to start ConfigServer: " << e.what();
+        }
+    }
 
     m_initialized = true;
 

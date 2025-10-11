@@ -12016,6 +12016,12 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     def->cli = "gcodeviewer";
     def->set_default_value(new ConfigOptionBool(false));
 
+    def = this->add("enable-config-server", coBool);
+    def->label = L("Enable ConfigServer");
+    def->tooltip = L("Enable the ConfigServer for MCP integration and remote control");
+    def->cli = "enable-config-server";
+    def->set_default_value(new ConfigOptionBool(false));
+
 #if ENABLE_GL_CORE_PROFILE
     def = this->add("opengl-version", coString);
     def->label = L("OpenGL version");

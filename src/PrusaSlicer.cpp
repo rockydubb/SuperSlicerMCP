@@ -122,6 +122,7 @@ int CLI::run(int argc, char **argv)
         std::find(m_transforms.begin(), m_transforms.end(), "cut_y") == m_transforms.end();
     bool                            start_downloader = false;
     bool                            delete_after_load = false;
+    bool                            enable_config_server = false;
     std::string                     download_url;
     bool 							start_as_gcodeviewer =
 #ifdef _WIN32
@@ -218,6 +219,13 @@ int CLI::run(int argc, char **argv)
     if (it != m_actions.end()) {
         start_gui = true;
         opengl_debug = true;
+        m_actions.erase(it);
+    }
+
+    it = std::find(m_actions.begin(), m_actions.end(), "enable-config-server");
+    if (it != m_actions.end()) {
+        enable_config_server = true;
+        start_gui = true;  // Need to start the GUI when config server is enabled
         m_actions.erase(it);
     }
 #else
@@ -728,8 +736,9 @@ int CLI::run(int argc, char **argv)
         params.input_files  = std::move(m_input_files);
         params.start_as_gcodeviewer = start_as_gcodeviewer;
         params.start_downloader = start_downloader;
-        params.download_url = download_url;
         params.delete_after_load = delete_after_load;
+        params.enable_config_server = enable_config_server;
+        params.download_url = download_url;
 #if ENABLE_GL_CORE_PROFILE
         params.opengl_version = opengl_version;
         params.opengl_debug = opengl_debug;

@@ -32,6 +32,7 @@ struct GUI_InitParams
     bool                        start_as_gcodeviewer;
     bool                        start_downloader;
     bool                        delete_after_load;
+    bool                        enable_config_server;
     std::string                 download_url;
 #if ENABLE_GL_CORE_PROFILE
 		std::pair<int, int>         opengl_version;

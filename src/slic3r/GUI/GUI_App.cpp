@@ -1884,7 +1884,13 @@ bool GUI_App::on_init_inner()
     });
 
     // Initialize ConfigServer if enabled via config file or command line
-    if (app_config->get("enable_config_server") == "1" || (init_params && init_params->enable_config_server)) {
+    // Command line option overrides preferences if specified
+    bool enable_server = app_config->get_bool("enable_config_server_at_startup");
+    if (init_params && init_params->enable_config_server) {
+        enable_server = true;  // Command line overrides preference
+    }
+    
+    if (enable_server) {
         try {
             int port = 21987; // Default port
             if (app_config->has("config_server_port")) {

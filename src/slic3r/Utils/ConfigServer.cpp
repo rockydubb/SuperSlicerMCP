@@ -12,13 +12,24 @@
 #include <wx/string.h>
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
-#include <boost/beast/http.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/algorithm/string.hpp>
 #include <sstream>
 #include <regex>
 #include <set>
 #include <map>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+#include <fstream>
+#include <boost/filesystem.hpp>
+#include <boost/property_tree/ptree.hpp>
+#include <boost/property_tree/json_parser.hpp>
+#include <chrono>
 
 namespace Slic3r {
 
@@ -43,22 +54,61 @@ bool ConfigServer::start(uint16_t port)
         return false;
     }
     
-    try {
-        m_port = port;
-        m_acceptor = std::make_unique<tcp::acceptor>(*m_io_context, tcp::endpoint(tcp::v4(), port));
-        m_acceptor->set_option(boost::asio::socket_base::reuse_address(true));
-        
-        m_running = true;
-        m_server_thread = std::make_unique<std::thread>(&ConfigServer::run_server, this);
-        
-        BOOST_LOG_TRIVIAL(info) << "ConfigServer started on port " << port;
-        return true;
+    // Try to bind to the requested port, auto-increment if it's in use
+    const uint16_t max_attempts = 10;
+    uint16_t attempts = 0;
+    uint16_t current_port = port;
+    
+    while (attempts < max_attempts) {
+        try {
+            m_acceptor = std::make_unique<tcp::acceptor>(*m_io_context, tcp::endpoint(tcp::v4(), current_port));
+            m_acceptor->set_option(boost::asio::socket_base::reuse_address(true));
+            
+            m_port = current_port;
+            m_running = true;
+            m_server_thread = std::make_unique<std::thread>(&ConfigServer::run_server, this);
+            
+            // Generate unique instance ID based on process ID and port
+            #ifdef _WIN32
+            m_instance_id = std::to_string(::GetCurrentProcessId()) + "_" + std::to_string(current_port);
+            #else
+            m_instance_id = std::to_string(::getpid()) + "_" + std::to_string(current_port);
+            #endif
+            
+            BOOST_LOG_TRIVIAL(info) << "ConfigServer started on port " << current_port 
+                                    << " (instance: " << m_instance_id << ")";
+            
+            if (current_port != port) {
+                BOOST_LOG_TRIVIAL(warning) << "Port " << port << " was in use, using port " << current_port << " instead";
+            }
+            
+            // Register this instance
+            register_instance();
+            
+            return true;
+        }
+        catch (const boost::system::system_error& e) {
+            if (e.code() == boost::asio::error::address_in_use) {
+                // Port is in use, try the next one
+                BOOST_LOG_TRIVIAL(debug) << "Port " << current_port << " is in use, trying next port...";
+                current_port++;
+                attempts++;
+                continue;
+            }
+            // Other error, fail
+            BOOST_LOG_TRIVIAL(error) << "Failed to start ConfigServer: " << e.what();
+            m_running = false;
+            return false;
+        }
+        catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(error) << "Failed to start ConfigServer: " << e.what();
+            m_running = false;
+            return false;
+        }
     }
-    catch (const std::exception& e) {
-        BOOST_LOG_TRIVIAL(error) << "Failed to start ConfigServer: " << e.what();
-        m_running = false;
-        return false;
-    }
+    
+    BOOST_LOG_TRIVIAL(error) << "Failed to find available port after " << max_attempts << " attempts";
+    return false;
 }
 
 void ConfigServer::stop()
@@ -68,6 +118,9 @@ void ConfigServer::stop()
     }
     
     m_running = false;
+    
+    // Unregister this instance
+    unregister_instance();
     
     if (m_acceptor) {
         m_acceptor->close();
@@ -162,6 +215,12 @@ void ConfigServer::handle_client(std::shared_ptr<tcp::socket> socket)
                 response.result(http::status::ok);
                 response.set(http::field::content_type, "application/json");
                 response.body() = handle_list_config_keys();
+            }
+            else if (request.method() == http::verb::get && request.target() == "/api/list_instances") {
+                // List all active SuperSlicer instances
+                response.result(http::status::ok);
+                response.set(http::field::content_type, "application/json");
+                response.body() = handle_list_instances("");
             }
             else {
                 response.result(http::status::not_found);
@@ -591,12 +650,23 @@ std::string ConfigServer::handle_get_status(const std::string& params)
     
     try {
         GUI::Plater* plater = GUI::wxGetApp().plater();
+        GUI::MainFrame* mainframe = GUI::wxGetApp().mainframe;
         
         std::stringstream response;
         response << "{";
         response << "\"app_version\": \"" << SLIC3R_VERSION << "\", ";
+        response << "\"instance_id\": \"" << m_instance_id << "\", ";
+        response << "\"port\": " << m_port << ", ";
+        response << "\"project_name\": \"" << (plater ? plater->get_project_filename().ToStdString() : "") << "\", ";
         response << "\"has_model\": " << (plater && !plater->model().objects.empty() ? "true" : "false") << ", ";
-        response << "\"object_count\": " << (plater ? plater->model().objects.size() : 0);
+        response << "\"object_count\": " << (plater ? plater->model().objects.size() : 0) << ", ";
+        response << "\"process_id\": " << 
+            #ifdef _WIN32
+            ::GetCurrentProcessId()
+            #else
+            ::getpid()
+            #endif
+            ;
         response << "}";
         
         return response.str();
@@ -733,6 +803,205 @@ std::string ConfigServer::handle_list_config_keys()
 void ConfigServer::register_command_handler(const std::string& command, CommandCallback handler)
 {
     m_command_handlers[command] = handler;
+}
+
+std::string ConfigServer::get_registry_dir()
+{
+    // Use system temp directory for cross-platform compatibility
+    boost::filesystem::path temp_dir = boost::filesystem::temp_directory_path();
+    boost::filesystem::path registry_dir = temp_dir / "superslicer_instances";
+    
+    // Create directory if it doesn't exist
+    if (!boost::filesystem::exists(registry_dir)) {
+        boost::filesystem::create_directories(registry_dir);
+    }
+    
+    return registry_dir.string();
+}
+
+std::string ConfigServer::get_instance_file_path(const std::string& instance_id)
+{
+    boost::filesystem::path registry_dir(get_registry_dir());
+    boost::filesystem::path instance_file = registry_dir / (instance_id + ".json");
+    return instance_file.string();
+}
+
+void ConfigServer::cleanup_stale_instances()
+{
+    try {
+        boost::filesystem::path registry_dir(get_registry_dir());
+        if (!boost::filesystem::exists(registry_dir)) {
+            return;
+        }
+        
+        // Iterate through all JSON files in the registry directory
+        boost::filesystem::directory_iterator end_itr;
+        for (boost::filesystem::directory_iterator itr(registry_dir); itr != end_itr; ++itr) {
+            if (boost::filesystem::is_regular_file(itr->status()) && 
+                itr->path().extension() == ".json") {
+                try {
+                    boost::property_tree::ptree pt;
+                    boost::property_tree::read_json(itr->path().string(), pt);
+                    
+                    int pid = pt.get<int>("process_id", 0);
+                    if (pid > 0) {
+                        // Check if process is still running
+                        bool is_running = false;
+                        #ifdef _WIN32
+                        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+                        if (hProcess != NULL) {
+                            CloseHandle(hProcess);
+                            is_running = true;
+                        }
+                        #else
+                        if (kill(pid, 0) == 0) {
+                            is_running = true;
+                        }
+                        #endif
+                        
+                        if (!is_running) {
+                            // Process is dead, remove the stale instance file
+                            boost::filesystem::remove(itr->path());
+                            BOOST_LOG_TRIVIAL(debug) << "Removed stale instance file: " << itr->path();
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    // If we can't read or parse the file, consider it stale and remove it
+                    BOOST_LOG_TRIVIAL(warning) << "Removing invalid instance file " << itr->path() << ": " << e.what();
+                    boost::filesystem::remove(itr->path());
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(warning) << "Failed to cleanup stale instances: " << e.what();
+    }
+}
+
+void ConfigServer::register_instance()
+{
+    try {
+        // Clean up stale instances before registering
+        cleanup_stale_instances();
+        
+        // Create instance info
+        boost::property_tree::ptree instance_info;
+        instance_info.put("instance_id", m_instance_id);
+        instance_info.put("port", m_port);
+        instance_info.put("process_id", 
+            #ifdef _WIN32
+            ::GetCurrentProcessId()
+            #else
+            ::getpid()
+            #endif
+        );
+        instance_info.put("start_time", 
+            std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
+        
+        // Add project name if available
+        if (m_gui_app) {
+            GUI::Plater* plater = GUI::wxGetApp().plater();
+            if (plater) {
+                std::string project_name = plater->get_project_filename().ToStdString();
+                if (!project_name.empty()) {
+                    instance_info.put("project_name", project_name);
+                }
+            }
+        }
+        
+        // Write instance info to its own file
+        std::string instance_file = get_instance_file_path(m_instance_id);
+        boost::property_tree::write_json(instance_file, instance_info);
+        
+        BOOST_LOG_TRIVIAL(debug) << "Registered instance " << m_instance_id << " in " << instance_file;
+    }
+    catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(warning) << "Failed to register instance: " << e.what();
+    }
+}
+
+void ConfigServer::unregister_instance()
+{
+    try {
+        std::string instance_file = get_instance_file_path(m_instance_id);
+        if (boost::filesystem::exists(instance_file)) {
+            boost::filesystem::remove(instance_file);
+            BOOST_LOG_TRIVIAL(debug) << "Unregistered instance " << m_instance_id << " by removing " << instance_file;
+        }
+    }
+    catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(warning) << "Failed to unregister instance: " << e.what();
+    }
+}
+
+std::string ConfigServer::handle_list_instances(const std::string& params)
+{
+    try {
+        boost::filesystem::path registry_dir(get_registry_dir());
+        if (!boost::filesystem::exists(registry_dir)) {
+            return "{\"instances\": []}";
+        }
+        
+        std::stringstream response;
+        response << "{\"instances\": [";
+        
+        bool first = true;
+        
+        // Iterate through all JSON files in the registry directory
+        boost::filesystem::directory_iterator end_itr;
+        for (boost::filesystem::directory_iterator itr(registry_dir); itr != end_itr; ++itr) {
+            if (boost::filesystem::is_regular_file(itr->status()) && 
+                itr->path().extension() == ".json") {
+                try {
+                    boost::property_tree::ptree pt;
+                    boost::property_tree::read_json(itr->path().string(), pt);
+                    
+                    int pid = pt.get<int>("process_id", 0);
+                    if (pid > 0) {
+                        // Check if process is still running
+                        bool is_running = false;
+                        #ifdef _WIN32
+                        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+                        if (hProcess != NULL) {
+                            CloseHandle(hProcess);
+                            is_running = true;
+                        }
+                        #else
+                        if (kill(pid, 0) == 0) {
+                            is_running = true;
+                        }
+                        #endif
+                        
+                        if (is_running) {
+                            if (!first) response << ", ";
+                            
+                            response << "{";
+                            response << "\"instance_id\": \"" << pt.get<std::string>("instance_id") << "\", ";
+                            response << "\"port\": " << pt.get<int>("port") << ", ";
+                            response << "\"process_id\": " << pid << ", ";
+                            response << "\"start_time\": " << pt.get<long>("start_time", 0);
+                            
+                            std::string project_name = pt.get<std::string>("project_name", "");
+                            if (!project_name.empty()) {
+                                response << ", \"project_name\": \"" << project_name << "\"";
+                            }
+                            
+                            response << "}";
+                            first = false;
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    // Skip invalid instance files
+                    BOOST_LOG_TRIVIAL(debug) << "Skipping invalid instance file " << itr->path() << ": " << e.what();
+                }
+            }
+        }
+        
+        response << "]}";
+        return response.str();
+    }
+    catch (const std::exception& e) {
+        return "{\"error\": \"Failed to list instances: " + std::string(e.what()) + "\"}";
+    }
 }
 
 } // namespace Slic3r

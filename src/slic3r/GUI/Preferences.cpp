@@ -778,6 +778,47 @@ void PreferencesDialog::build()
 	}
 
     activate_options_tab(m_tabid_2_optgroups.back().back(), m_tabid_2_optgroups.back().back()->parent()->GetSizer()->GetItemCount() > 1 ? 3 : 20);
+    
+    // Add ConfigServer options
+    if (is_editor) {
+        m_tabid_2_optgroups.back().emplace_back(create_options_group(_L("Config Server"), tabs, 0));
+        
+        append_bool_option(m_tabid_2_optgroups.back().back(), "enable_config_server_at_startup",
+            L("Enable Config Server at startup"),
+            L("If enabled, starts the HTTP Config Server automatically when SuperSlicer starts. "
+              "This allows external tools and scripts to query and modify configuration values via HTTP API. "
+              "The server will listen on port 21987 by default. "
+              "Can be overridden by the --enable-config-server command line option."),
+            app_config->get_bool("enable_config_server_at_startup"));
+        
+        // Get the config server port value, defaulting to 21987 if not set
+        int config_server_port_val = 21987;
+        std::string port_str = app_config->get("config_server_port");
+        if (!port_str.empty()) {
+            try {
+                config_server_port_val = std::stoi(port_str);
+            } catch (...) {
+                config_server_port_val = 21987;
+            }
+        }
+        
+        append_int_option(m_tabid_2_optgroups.back().back(), "config_server_port",
+            L("Config Server port"),
+            L("Port number for the Config Server to listen on. If the port is in use, it will automatically increment to find an available port. "
+              "Default is 21987. Requires restart to take effect."),
+            10,  // width
+            config_server_port_val,
+            ConfigOptionMode::comNone,
+            1024,  // min port
+            65535  // max port
+        );
+        
+        m_values_need_restart.push_back("enable_config_server_at_startup");
+        m_values_need_restart.push_back("config_server_port");
+        
+        activate_options_tab(m_tabid_2_optgroups.back().back(), 3);
+    }
+    
 	// end of general
 
     // Add "Camera" tab

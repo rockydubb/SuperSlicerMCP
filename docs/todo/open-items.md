@@ -4,22 +4,31 @@ Updated 2026-08-08, after the first dependency-stage build.
 
 ## Blocking
 
-**ConfigServer binds to 0.0.0.0, not loopback.** `ConfigServer.cpp:64` uses
-`tcp::endpoint(tcp::v4(), current_port)`, which is `INADDR_ANY`. Confirmed by
-`lsof` reporting `*:21987` and by a 200 response on `http://0.0.0.0:21987`. No
-auth, no TLS, and the API writes configuration and loads files, so this is an
-unauthenticated write-capable API exposed to the local network. `CLAUDE.md`
-asserts loopback only; that is intent, not what the code does. Fix is one line:
+Nothing. The C++ half builds, runs and is verified.
 
-```cpp
-tcp::endpoint(boost::asio::ip::make_address("127.0.0.1"), current_port)
-```
+## Parked by decision
 
-**Python half untested.** `requirements-mcp.txt` floors `fastmcp>=0.1.0`, see
-below. Nothing has installed or run it yet, so the Claude-to-slicer path is
-unproven end to end even though the HTTP half works.
+**The Python MCP layer is broken and work on it has stopped.** See
+`decisions/ADR-002-stop-work-on-python-mcp-layer.md`. It is written against
+FastMCP 0.x and dies on first import under 3.4.6, plus three further certain
+breakages, a missing `httpx` dependency, an `asyncio` PyPI pin that shadows the
+stdlib, and HTTP transport where Claude Code needs stdio. It is a rewrite, not
+a version bump.
+
+`superslicer_fastmcp_server.py`, `run_mcp_server.sh` and
+`requirements-mcp.txt` are left in the tree, untouched and known broken.
+
+Use the stock CLI at
+`/Applications/SuperSlicer.app/Contents/MacOS/SuperSlicer` instead. 40 options,
+636 config settings via `--help-fff`, verified headless.
 
 ## Resolved
+
+**ConfigServer now binds to loopback.** Was
+`tcp::endpoint(tcp::v4(), current_port)`, which is `INADDR_ANY`, so the
+unauthenticated write-capable API was reachable from the LAN. Now
+`make_address("127.0.0.1")`. Verified: `lsof` reports `127.0.0.1:21987`,
+loopback returns 200, and the machine's LAN address is refused.
 
 **The port builds and runs.** Both stages exit 0. 93MB arm64 binary at
 `build/bin/superslicer`. All five ConfigServer endpoints return 200, including
@@ -60,18 +69,20 @@ against the macOS 26 SDK with `-mmacosx-version-min=10.14`, and the three
 `-Werror=` availability guards at `deps/CMakeLists.txt:121` that exist to catch
 this exact mismatch never fired. Leave the target alone.
 
-## Expected to bite
+## Confirmed, no longer predictions
 
-**`fastmcp>=0.1.0` in `requirements-mcp.txt`.** That floor predates FastMCP's
-later API. A fresh `pip install` will pull something
-`superslicer_fastmcp_server.py` was not written against, and the failure will look
-like import errors or unknown decorator arguments rather than anything obviously
-version related. Pin to whatever version guysoft actually used, once determined.
-Python here is 3.14.6, which is also newer than anything that script was tested
-on.
+**`fastmcp>=0.1.0` was the problem, and it is worse than a floor.** Measured on
+FastMCP 3.4.6: first import raises
+`TypeError: FastMCP() got unexpected keyword argument(s): 'dependencies'`, plus
+`@mcp.server.start()` / `@mcp.server.stop()` (lines 913, 925) and
+`app = mcp.app` (line 931) all target APIs that no longer exist. `httpx` is
+imported at line 37 and missing from requirements. `asyncio>=3.4.3` in
+requirements is an abandoned PyPI package shadowing the stdlib. Parked, see
+ADR-002.
 
-**Dependency rot generally.** guysoft's last three commits were all deps fixes.
-Budget for a few rounds.
+**Dependency rot was one fix, not several.** guysoft's last three commits were
+all Linux deps fixes and the runbook budgeted for "a few rounds" of the macOS
+equivalent. Only OpenVDB needed anything. The other 21 built unmodified.
 
 ## Questions to resolve
 
@@ -99,9 +110,20 @@ picked deliberately. No automation for this, and probably not worth building for
 branch that has been quiet since March.
 
 **Security hardening if this ever leaves loopback.** The ConfigServer has no auth
-and no TLS, and it can load files and write config. Fine on 127.0.0.1 for a
-single user. `FASTMCP_README.md` documents a `uvicorn --host 0.0.0.0` invocation
-that should not be used as written.
+and no TLS, and it can load files and write config. Now genuinely bound to
+127.0.0.1, which is fine for a single user. Two places still document or set
+`0.0.0.0` and should not be followed: `FASTMCP_README.md`, and
+`run_mcp_server.sh` itself, which defaults `MCP_SERVER_HOST` to `0.0.0.0`.
+
+**Thin stdio MCP server over the CLI.** The better shape if invoking the CLI
+directly becomes the bottleneck. Roughly 150 lines against current FastMCP,
+shelling out to the stock app binary. No C++ fork, no listener, no upstream
+divergence. Deferred, not rejected. See ADR-002.
+
+**Build artifacts are untracked but noisy.** `version.date.inc`,
+`cmake/CPackConfig.cmake` and 20 generated `resources/localization/*/SuperSlicer.mo`
+files appear in every `git status` after a build. None are committed. A
+`.gitignore` entry would quiet them.
 
 **Upstream contribution.** The port applies cleanly to mainline, so it could go to
 supermerill as a PR. Mainline has been dormant since November 2025, so expectations

@@ -22,6 +22,12 @@ deps/build-linux/*
 .pkg_cache
 CMakeUserPresets.json
 **/bad_*
+# Our docs tree holds no build artifacts. Without this, the bare `build*`
+# rule above swallows docs/runbooks/build-macos.md and anything else we
+# name build-something. Kept above the .DS_Store rule so that rule still
+# wins inside docs/.
+!docs/**
+
 # MacOS Ignores
 .DS_Store
 

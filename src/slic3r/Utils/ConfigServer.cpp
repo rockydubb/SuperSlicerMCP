@@ -61,7 +61,14 @@ bool ConfigServer::start(uint16_t port)
     
     while (attempts < max_attempts) {
         try {
-            m_acceptor = std::make_unique<tcp::acceptor>(*m_io_context, tcp::endpoint(tcp::v4(), current_port));
+            // Loopback only. This API has no authentication and no TLS, and it
+            // can write configuration and load files, so it must not be
+            // reachable off the machine. tcp::v4() as an endpoint address is
+            // INADDR_ANY, which binds 0.0.0.0 and exposes all of that to the
+            // local network.
+            m_acceptor = std::make_unique<tcp::acceptor>(
+                *m_io_context,
+                tcp::endpoint(boost::asio::ip::make_address("127.0.0.1"), current_port));
             m_acceptor->set_option(boost::asio::socket_base::reuse_address(true));
             
             m_port = current_port;

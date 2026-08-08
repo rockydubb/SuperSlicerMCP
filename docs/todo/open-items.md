@@ -1,22 +1,45 @@
 # Open items
 
-Updated 2026-08-08.
+Updated 2026-08-08, after the first dependency-stage build.
 
 ## Blocking
 
-**Nothing has been compiled.** The whole port rests on five clean cherry-picks,
-which prove no textual conflict and say nothing about whether it builds. Until a
-build runs, treat `mcp-on-latest` as unverified.
+**OpenVDB will not compile under Apple Clang 26.** The only dependency that
+fails. `NodeManager.h` lines 330, 350 and 375 write `OpT::template eval(...)`
+with no argument list, and
+`-Wmissing-template-arg-list-after-template-kw` is a default error in this
+compiler. Fix is drafted but not applied, see
+`runbooks/build-macos.md`. Nothing downstream can proceed until this clears.
 
-**cmake is not installed.** `brew install cmake`. The build script aborts without
-it.
+**The slicer itself is still uncompiled.** The dependency stage got 21 of 22
+libraries built, which says the dependency stack is nearly sound and still says
+nothing about whether the MCP port compiles. `mcp-on-latest` stays unverified.
 
-**Move the repo out of iCloud** before building. See `runbooks/build-macos.md`.
+## Resolved
+
+**cmake.** Installed, 4.4.2 via Homebrew. CMake 4 drops support for
+`cmake_minimum_required(VERSION <3.5)` and this tree has two below that floor,
+but `BuildMacOS.sh:16` already exports `CMAKE_POLICY_VERSION_MINIMUM=3.5` and
+both built clean.
+
+**Repo out of iCloud.** Now at `~/Developer/SuperSlicerMCP`. Copied rather than
+moved, so the iCloud original survives as a fallback but is behind as of
+`dbef7d6ae`. The dependency stage wrote 5.8G, which vindicates the move.
+
+**Docs tree committed.** `CLAUDE.md` and `docs/` were untracked and would not
+have survived a clone. Committed in `dbef7d6ae`, which also added a `!docs/**`
+exception to `.gitignore`, because the inherited `build*` rule was matching
+`docs/runbooks/build-macos.md` at depth.
+
+## Ruled out
+
+**Deployment target 10.14 against the macOS 26 SDK.** Predicted to be the main
+source of dependency-stage breakage. It is not. Twenty-one dependencies built
+against the macOS 26 SDK with `-mmacosx-version-min=10.14`, and the three
+`-Werror=` availability guards at `deps/CMakeLists.txt:121` that exist to catch
+this exact mismatch never fired. Leave the target alone.
 
 ## Expected to bite
-
-**Deployment target 10.14 against the macOS 26 SDK.** Hardcoded at four places in
-`BuildMacOS.sh`. Most likely source of dependency-stage failures.
 
 **`fastmcp>=0.1.0` in `requirements-mcp.txt`.** That floor predates FastMCP's
 later API. A fresh `pip install` will pull something

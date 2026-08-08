@@ -4,18 +4,39 @@ Updated 2026-08-08, after the first dependency-stage build.
 
 ## Blocking
 
-**OpenVDB will not compile under Apple Clang 26.** The only dependency that
-fails. `NodeManager.h` lines 330, 350 and 375 write `OpT::template eval(...)`
-with no argument list, and
-`-Wmissing-template-arg-list-after-template-kw` is a default error in this
-compiler. Fix is drafted but not applied, see
-`runbooks/build-macos.md`. Nothing downstream can proceed until this clears.
+**ConfigServer binds to 0.0.0.0, not loopback.** `ConfigServer.cpp:64` uses
+`tcp::endpoint(tcp::v4(), current_port)`, which is `INADDR_ANY`. Confirmed by
+`lsof` reporting `*:21987` and by a 200 response on `http://0.0.0.0:21987`. No
+auth, no TLS, and the API writes configuration and loads files, so this is an
+unauthenticated write-capable API exposed to the local network. `CLAUDE.md`
+asserts loopback only; that is intent, not what the code does. Fix is one line:
 
-**The slicer itself is still uncompiled.** The dependency stage got 21 of 22
-libraries built, which says the dependency stack is nearly sound and still says
-nothing about whether the MCP port compiles. `mcp-on-latest` stays unverified.
+```cpp
+tcp::endpoint(boost::asio::ip::make_address("127.0.0.1"), current_port)
+```
+
+**Python half untested.** `requirements-mcp.txt` floors `fastmcp>=0.1.0`, see
+below. Nothing has installed or run it yet, so the Claude-to-slicer path is
+unproven end to end even though the HTTP half works.
 
 ## Resolved
+
+**The port builds and runs.** Both stages exit 0. 93MB arm64 binary at
+`build/bin/superslicer`. All five ConfigServer endpoints return 200, including
+`/api/config` with 194KB of annotated keys. `mcp-on-latest` is no longer
+unverified. See
+`implementation-logs/2026-08-08-first-successful-build-and-configserver-smoke-test.md`.
+
+**OpenVDB under Apple Clang 26.** Fixed in `deps/+OpenVDB/OpenVDB.cmake` by
+demoting `-Wmissing-template-arg-list-after-template-kw` to a warning on Apple
+only, preserving `DEP_WERRORS_SDK`. The one dependency fix the whole stack
+needed.
+
+**Use a separate datadir.** First launch tried to migrate
+`~/Library/Application Support/SuperSlicer`, the production install's directory,
+and failed on a missing `snapshots` folder. Run with
+`--datadir ~/Developer/superslicer-dev-data` rather than creating the folder.
+Keeps an unproven beta away from real printer profiles.
 
 **cmake.** Installed, 4.4.2 via Homebrew. CMake 4 drops support for
 `cmake_minimum_required(VERSION <3.5)` and this tree has two below that floor,
